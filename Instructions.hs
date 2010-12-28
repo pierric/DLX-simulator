@@ -152,7 +152,7 @@ dump = undefined
 
 assemble im = let inst_part = concatMap (inst_to_byte . check_consistent . resolve_labels) instr
                   data_part = concatMap data_to_byte datum
-              in inst_part ++ data_part -- sortBy (\a b -> compare (snd a) (snd b)) (inst_part ++ data_part)
+              in sortBy (\a b -> compare (fst a) (fst b)) (inst_part ++ data_part)
     where st   = execState im (S [] [] [] 0 0 A4)
           labls = reverse (st ^. _labls)
           instr = reverse (st ^. _instr)
@@ -177,36 +177,36 @@ assemble im = let inst_part = concatMap (inst_to_byte . check_consistent . resol
                 JType _ (Left imm)     | inRange (-33554432, 33554431) imm -> i
                 _ -> error "inconsistent instrument"
 
-          inst_to_byte :: (InstDef, MemAddr) -> [(Byte,MemAddr)]
+          inst_to_byte :: (InstDef, MemAddr) -> [(MemAddr,Byte)]
           inst_to_byte (inst, this) = 
               let bits = case inst of
                            IType op rs rd (Left imm) -> op_to_bits op ++ int_to_bits 5 (rs ^. _reg_id)  ++ int_to_bits 5 (rd ^. _reg_id) ++ int_to_bits 16 imm
                            RType op rs1 rs2 rd sa    -> let func = func_to_bits op 
                                                         in int_to_bits 6 0 ++ concatMap (int_to_bits 5 . (^. _reg_id)) [rs1,rs2,rd] ++ int_to_bits 5 sa ++ func
                            JType op (Left imm)       -> op_to_bits op ++ int_to_bits 26 imm
-              in zip (map bits_to_int (chunk 8 bits)) (enumFrom this)
+              in zip (enumFrom this) (map bits_to_int (chunk 8 bits))
               where
                 op_to_bits   = int_to_bits 6 . opcode_lookupR
                 func_to_bits = int_to_bits 6 . func_lookupR
 
-          data_to_byte :: (DataDef, MemAddr) -> [(Byte, MemAddr)]
+          data_to_byte :: (DataDef, MemAddr) -> [(MemAddr,Byte)]
           data_to_byte (dat, this) = 
               case dat of
-                BData byte -> [(byte, this)]
-                HData half -> zip (map bits_to_int $ chunk 8 (int_to_bits 16 half)) (enumFrom this)
-                WData word -> zip (map bits_to_int $ chunk 8 (int_to_bits 32 word)) (enumFrom this)
+                BData byte -> [(this, byte)]
+                HData half -> zip (enumFrom this) (map bits_to_int $ chunk 8 (int_to_bits 16 half))
+                WData word -> zip (enumFrom this) (map bits_to_int $ chunk 8 (int_to_bits 32 word))
                 SData string -> let convert c = let o = ord c
                                                 in if inRange (0,127) o then
                                                        fromIntegral o :: Byte
                                                    else
                                                        error "char outside ASCII is not supported"
-                                in zip (map convert string) (enumFrom this)
+                                in zip (enumFrom this) (map convert string)
 
 test = do rec _pos 0x00
               addi r1 r1 2
               xor  r1 r1 r1
-              beqz r0 (_dl finish)
-              jr r2
+              bnez r0 (_dl finish)
+              jr r0
               finish <- make_labl
               
               _pos 0x100
