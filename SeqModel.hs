@@ -3,6 +3,9 @@ module SeqModel where
 import Data.Bits
 import ForSyDe.Shallow hiding (Memory)
 import ForSyDe.Shallow.BitVector
+import Types
+
+import Debug.Trace
 
 -- signal of `next_pc` in IF
 next_pc :: Signal Word  -- current PC
@@ -21,14 +24,15 @@ rs2 = mapSY (select 11 5)
 
 type RegFile = Vector Word
 
-register_file :: Signal RegAddr                -- 1st ReadAddress
+register_file :: Vector Word                   -- initial register
+              -> Signal RegAddr                -- 1st ReadAddress
               -> Signal RegAddr                -- 2nd ReadAddress
               -> Signal (RegAddr, Word, Bool)  -- (WriteAddress, WriteData, WriteEnable)
               -> Signal Bool                   -- Reset
               -> Signal (Word,Word, RegFile)   -- (ReadData, ReadData)
-register_file rd1 rd2 wrt rst = let (r1,r2,reg) = unzip3SY $ reg_2r1w reg' rd1 rd2 wrt rst
-                                    reg'        = delaySY empty reg
-                                in zip3SY r1 r2 reg
+register_file empty rd1 rd2 wrt rst = let (r1,r2,reg) = unzip3SY $ reg_2r1w reg' rd1 rd2 wrt rst
+                                          reg'        = delaySY empty reg
+                                      in zip3SY r1 r2 reg
     where reg_2r1w = zipWith5SY (\reg ra1 ra2 (wa,wd,we) reset ->
                                      if reset then
                                          (0,0,empty)
@@ -38,7 +42,6 @@ register_file rd1 rd2 wrt rst = let (r1,r2,reg) = unzip3SY $ reg_2r1w reg' rd1 r
                                               in (forward ra1, forward ra2, reg')
                                           else
                                               (reg `atV` ra1, reg `atV` ra2, reg))
-          empty    = copyV 32 (0 :: Word)
 
 imm_sign_ext :: Signal Word  -- ir
              -> Signal Word  -- signed extension of imm
@@ -49,7 +52,7 @@ opcode :: Signal Word       -- ir
        -> Signal Opcode     -- opcode
 opcode = mapSY (\ir -> let opcode = select 0 6 ir
                            func   = select 26 6 ir
-                       in if opcode == 0 then func_lookup func else opcode_lookup opcode
+                       in if opcode == 0 then func_lookup func else opcode_lookup opcode)
 
 branch :: Signal Word       -- val_a
        -> Signal Opcode     -- opcode
@@ -111,15 +114,17 @@ alu_out = zipWith5SY (\val_a val_b next_pc imm opcode ->
 type Memory  = Vector Half
 data MemAcc  = SByte Byte | SHalf Half | SWord Word
              | LByte      | LHalf      | LWord
+             | NoAcc
 data MemOut  = OByte Byte | OHalf Half | OWord Word | ONull
 
-memory :: Signal MemAddr                     -- w, read only
-       -> Signal (MemAddr, MemAcc)           -- b/h/w, read | write
-       -> Signal Bool                        -- reset
-       -> Signal (Word, MemOut, Memory)      -- one word and one b/h/w output
-memory rd rw reset = let (o1,o2, mem) = unzip3SY (mem_2r1w mem' rd rw reset)
-                         mem'       = delaySY empty mem
-                     in zip3SY o1 o2 mem
+memory :: Vector Half                                 -- initial memory
+       -> Signal MemAddr                              -- w, read only
+       -> Signal (MemAddr, MemAcc)                    -- b/h/w, read | write
+       -> Signal Bool                                 -- reset
+       -> (Signal Word, Signal (MemOut, Memory))      -- one word and one b/h/w output
+memory empty rd rw reset = let (o1,o2, mem) = unzip3SY (mem_2r1w mem' rd rw reset)
+                               mem'       = delaySY empty mem
+                           in (o1, zipSY o2 mem)
     where mem_2r1w = zipWith4SY (\mem rd (rw,acc) reset ->
                                      if reset then 
                                          (0, ONull, empty)
@@ -133,7 +138,8 @@ memory rd rw reset = let (o1,o2, mem) = unzip3SY (mem_2r1w mem' rd rw reset)
                                                SHalf h -> let mem' = set_half rw h mem 
                                                           in (get_ir mem', ONull, mem')
                                                SWord w -> let mem' = set_word rw w mem
-                                                          in (get_ir mem', ONull, mem'))
+                                                          in (get_ir mem', ONull, mem')
+                                               NoAcc   -> (get_ir mem, ONull, mem))
               where get_byte addr memo = let (wrd,ofs) = divMod addr 2
                                              half      = memo `atV` wrd
                                          in fromIntegral (case ofs of 0 -> (shiftR half 8); 1 -> (half .&. 0xff))
@@ -144,9 +150,9 @@ memory rd rw reset = let (o1,o2, mem) = unzip3SY (mem_2r1w mem' rd rw reset)
                                                  error "unaligned halfword access"
                     get_word addr memo = let (wrd,ofs) = divMod addr 2
                                              h = fromIntegral (memo `atV` wrd) :: Word
-                                             l = fromIntegral (memo `atV` wrd) :: Word
+                                             l = fromIntegral (memo `atV` (wrd + 1)) :: Word
                                          in if ofs == 0 && even wrd then 
-                                                shiftL h 16 .|. l
+                                                shiftL h 16 .|. (l .&. 0xffff)
                                             else 
                                                 error "unailgned word access"
                     set_byte addr val memo = let (wrd,ofs) = divMod addr 2
@@ -169,8 +175,6 @@ memory rd rw reset = let (o1,o2, mem) = unzip3SY (mem_2r1w mem' rd rw reset)
                                                 else 
                                                     error "unanligned word access"
 
-          empty    = copyV 65536 (0 :: Half)
-
 mem_access :: Signal Opcode
            -> Signal Word
            -> Signal MemAcc
@@ -183,7 +187,9 @@ mem_access = zipWithSY (\opcode b ->
                               Lhu -> LHalf
                               Sb  -> SByte (fromIntegral (b .&. 0xff))
                               Sh  -> SHalf (fromIntegral (b .&. 0xffff))
-                              Sw  -> SWord b)
+                              Sw  -> SWord b
+                              _   -> NoAcc
+                       )
                                         
 
 write_back :: Signal Word
@@ -204,18 +210,37 @@ write_back = zipWith4SY (\ir opcode alu_out lmd ->
 
 -- input of the machine is initial memory image
 -- output of the machine is the trace of (pc, register file, memory)
-machine = let reset   = infiniteS id False
-              pc      = delaySY (0 :: Word) npc
-              npc     = next_pc pc (delaySY (0 :: Word) alu) (delaySY (0 :: MemAddr) brch)
-              op      = opcode ir
-              imm     = imm_sign_ext ir
-              (a,b,reg) = unzip3SY $ register_file (rs1 ir) (rs2 ir) wb reset
-              alu     = alu_out a b npc imm op
-              brch    = branch a op
-              (ir,lmd,mem) = unzip3SY $ memory pc (zipSY alu (mem_access op b)) reset
-              wb      = write_back ir op alu lmd
-          in zip3SY pc reg mem
+-- machine :: Snapshot -> Signal Snapshot
+machine (initPC,initReg,initMem) =
+    let reset   = infiniteS id False
 
+        pc      = delaySY initPC npc
+        npc     = next_pc pc alu brch
+
+        -- fetch ir and access memory
+        (ir,mem_out) = memory initMem pc (delaySY (0, NoAcc) $ zipSY alu (mem_access op b)) reset
+        -- decode
+        op      = opcode ir
+        imm     = imm_sign_ext ir
+        -- access register
+        (a,b,reg) = unzip3SY $ register_file initReg (rs1 ir) (rs2 ir) (delaySY (undefined, undefined, False) wb) reset
+        -- execution
+        alu     = alu_out a b pc imm op
+        -- braching
+        brch    = branch a op
+        -- write back
+        (lmd,mem)  = unzipSY mem_out
+        wb      = write_back ir op alu lmd
+    in zip3SY pc reg mem
+
+gen_snapshot :: [(MemAddr, Byte)] -> Snapshot
+gen_snapshot image = (0, copyV 32 (0 :: Word), mem)
+    where mem  = foldl update (copyV 65536 (0 :: Half)) image
+          update m (addr, byte) = let (ha,ho) = divMod (fromIntegral addr) 2
+                                      v0 = intToBitVector' 16 (m `atV` ha)
+                                      v1 = intToBitVector' 8  byte
+                                      v  = bitVectorToInt' (if ho == 0 then v1 <+> dropV 8 v0 else takeV 8 v0 <+> v1)
+                                  in replaceV m ha v
 
 zipWith5SY :: (a -> b -> c -> d -> e -> f) -> Signal a -> Signal b -> Signal c -> Signal d -> Signal e -> Signal f
 zipWith5SY _ NullS   _       _       _      _     = NullS
@@ -227,4 +252,12 @@ zipWith5SY f (v:-vs) (w:-ws) (x:-xs) (y:-ys) (z:-zs) = f v w x y z :- (zipWith5S
 
 replaceV' v n = replaceV v (fromIntegral n)
 intToBitVector' b n = intToBitVector b (fromIntegral n)
-bitVectorToInt' v | lengthV v <= 32 = fromIntegral $ bitVectorToInt v
+bitVectorToInt' v | l <= 32 = fromIntegral $ bitVectorToInt $ copyV (32 - l) 0 <+> v
+                  where l = lengthV v
+
+
+t0 image = let (_,_,m) = gen_snapshot image
+               (ir, _) = memory m (infiniteS (+4) 0) undefined (infiniteS id False)
+           in ir
+t1 image = machine $ gen_snapshot image
+                 
