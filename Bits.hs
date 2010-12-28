@@ -9,8 +9,7 @@ w2b :: Integral i => i -> [Bit]
 w2b x = let (q,r) = quotRem x 2 in toEnum (fromIntegral r) : w2b q
 
 b2w :: Integral i => [Bit] -> i
-b2w []     = 0
-b2w (b:bs) = fromIntegral (fromEnum b) + b2w bs * 2
+b2w = foldr (\b a -> fromIntegral (fromEnum b) + a * 2) 0
 
 int_to_bits sz n = reverse $ take sz $ w2b n
 
