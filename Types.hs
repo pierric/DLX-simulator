@@ -1,11 +1,12 @@
-module Types(Byte, Half, Word, RegAddr, MemAddr, Opcode(..), Optype(..),
-             opcode_lookup, opcode_lookupR,
+module Types(Byte, Half, Word, RegAddr, MemAddr, Opcode(..), Optype(..), Snapshot,
+             type_of, opcode_lookup, opcode_lookupR,
              func_lookup, func_lookupR
             ) where
 
 import Data.Int
 import Data.Maybe
 import qualified Data.Bimap as BM
+import ForSyDe.Shallow.Vector(Vector)
 
 type Byte = Int8
 type Half = Int16
@@ -24,6 +25,8 @@ data Opcode = Addi | Addiu | Subi | Subiu | Andi | Ori | Xori | Lhgi
 
 -- Load, Store, I-kind ALU, R-kind ALU, Jump
 data Optype = ILoad | IStore | IALUi | IALUr | IJump
+
+type Snapshot = (MemAddr, Vector Word, Vector Half)
 
 type_of opcode | opcode `elem` [Lb,Lh,Lw,Lbu,Lhu] = ILoad
                | opcode `elem` [Sb,Sh,Sw]         = IStore
