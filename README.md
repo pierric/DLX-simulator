@@ -1,6 +1,7 @@
 # DLX-simulator
 DLX simulator written with ForSyDe in Haskell
 
+```
 example = do rec 
     _pos 0x00
     addi r1 r1 2
@@ -18,3 +19,4 @@ example = do rec
     _string "ooxx,love"
     _word 0x1234
     return ()
+```
